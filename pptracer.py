@@ -16,12 +16,6 @@ from autograd.extend import primitive, Box, register_notrace, VJPNode, VSpace
 from autograd.misc.flatten import flatten
 from autograd.builtins import tuple
 
-# TODO return tuple((latents, observed)) ? or maybe just return a dict of things
-# of interest, then we condition on some of those. ooo how about Nones or
-# indices to represent unobserved? yeah let's try tuple and nones.
-# but then we get out a tuple node, still not clear how to associate with RVs,
-# unless we look at its parents... and we could have done that with dict nodes
-
 class ProbProgNode(Node):
   __slots__ = ['parents', 'logp', 'fun', 'sample']
   def __init__(self, ans, fun, args, kwargs, argnums, parents):
@@ -42,7 +36,7 @@ class ProbProgNode(Node):
 
 def make_logp(fun, *args, **kwargs):
   def fun_(rng):
-    with use_rng(rng): return fun(*args, **kwargs)
+    with use_rng(rng): return tuple(fun(*args, **kwargs))
   start_node = ProbProgNode.new_root()
   out, end_node = trace(start_node, fun_, global_rng)
   graph = list(toposort(end_node))[::-1]
@@ -107,9 +101,21 @@ deflogp(normal, randn_logp)
 
 ### basic examples
 
-rvs, out, logp = make_logp(lambda: tuple([normal(np.zeros(2))]))
-print logp(rvs, out)
-print grad(logp)(rvs, out)
+def sample_prior(A):
+  z = normal(np.ones(2), 2 * np.ones(2))
+  x = normal(np.dot(A, z), 3 * np.ones(2))
+  return z, x
+
+sample = lambda: sample_prior(np.array([[1., 0.], [0., 0.]]))
+rvs, prior_sample, logp = make_logp(sample)
+print rvs
+print prior_sample
+print logp(rvs, prior_sample)
+print
+
+obs = (None, np.ones(2))
+print logp(rvs, obs)
+print grad(logp)(rvs, obs)
 
 # ### hmc
 
