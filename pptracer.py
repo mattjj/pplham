@@ -1,4 +1,4 @@
-from itertools import repeat
+from itertools import repeat, chain
 from functools import partial
 from contextlib import contextmanager
 from collections import defaultdict
@@ -17,44 +17,40 @@ from autograd.misc.flatten import flatten
 from autograd.builtins import tuple
 
 class ProbProgNode(Node):
-  __slots__ = ['parents', 'logp', 'fun', 'sample']
+  __slots__ = ['parents', 'is_rv', 'x', 'f']
   def __init__(self, ans, fun, args, kwargs, argnums, parents):
-    args = subvals(args, zip(argnums, repeat(None)))
-    full = lambda args_: subvals(args, zip(argnums, args_))
-    if fun in logpdfs:
-      self.logp = lambda x, args: logpdfs[fun](x, *full(args), **kwargs)
-      self.sample = ans
-    else:
-      self.fun = lambda args: fun(*full(args), **kwargs)
-      self.sample = None
+    def f(x, logp):
+      _args = subvals(args, zip(argnums, (p.x for p in parents)))
+      if self.is_rv:
+        return x, logp + logpdfs[fun](x, *_args, **kwargs)
+      return fun(*_args, **kwargs), logp
     self.parents = parents
+    self.is_rv = fun in logpdfs
+    self.x = ans
+    self.f = f
 
   def initialize_root(self):
     self.parents = []
-    self.fun = lambda args: None
-    self.sample = None
+    self.is_rv = False
+    self.f = lambda x, logp: (x, logp)
+    self.x = None
 
-def make_logp(fun, *args, **kwargs):
+def make_logp(fun, ifix):
   def fun_(rng):
-    with use_rng(rng): return tuple(fun(*args, **kwargs))
+    with use_rng(rng): return tuple(fun())
   start_node = ProbProgNode.new_root()
-  out, end_node = trace(start_node, fun_, global_rng)
+  _, end_node = trace(start_node, fun_, global_rng)
   graph = list(toposort(end_node))[::-1]
-  rvs = {n: n.sample for n in graph if n.sample is not None}
-  def logpdf(rvs, obs, *args):
-    vals = merge(rvs, zip(end_node.parents, obs))
+  xnodes = [node for i, node in enumerate(end_node.parents) if i in ifix]
+  znodes = [node for node in graph if node.is_rv and node not in xnodes]
+  zfilt = lambda zs: [z for z, node in zip(zs, znodes) if node in end_node.parents]
+  def logpdf(z, x):
+    rvs = dict(zip(znodes, z) + zip(xnodes, x))
     logp = 0.
     for node in graph:
-      parent_vals = (vals[p] for p in node.parents)
-      if node.sample is None:
-        vals[node] = node.fun(parent_vals)
-      else:
-        logp += node.logp(vals[node], parent_vals)
+      node.x, logp = node.f(rvs.get(node), logp)
     return logp
-  return rvs, out, logpdf
-
-def merge(dct, pairs):
-  return dict(dct, **{k: v for k, v in pairs if v is not None})
+  return logpdf, [node.x for node in znodes], zfilt
 
 ### setting up a global rng and rng primitives
 
@@ -99,83 +95,81 @@ def randn_logp(x, loc=0., scale=1., size=None):
 deflogp(normal, randn_logp)
 
 
-### basic examples
+### basic example
 
-def sample_prior(A):
-  z = normal(np.ones(2), 2 * np.ones(2))
-  x = normal(np.dot(A, z), 3 * np.ones(2))
-  return z, x
+npr.seed(0)
 
-sample = lambda: sample_prior(np.array([[1., 0.], [0., 0.]]))
-rvs, prior_sample, logp = make_logp(sample)
-print rvs
-print prior_sample
-print logp(rvs, prior_sample)
+def sample_prior():
+  A = np.array([[1., 0.], [0., 0.]])
+  z1 = normal(np.ones(2), 2 * np.ones(2))
+  z2 = normal(np.zeros(2))
+  x = normal(np.dot(A, z1) + z2, 3 * np.ones(2))
+  return z1, x
+
+logp, latent_rvs, zfilt = make_logp(sample_prior, (1,))
+print latent_rvs         # should be (z1, z2)
+print zfilt(latent_rvs)  # should be just z1
+print logp(latent_rvs, np.ones(2))
 print
 
-obs = (None, np.ones(2))
-print logp(rvs, obs)
-print grad(logp)(rvs, obs)
+### hmc
 
-# ### hmc
+def _hmc_transition(logp, x0, step_size, num_steps):
+  def leapfrog_step(x, v):
+    v = v + step_size/2. * grad(logp)(x)
+    x = x + step_size * v
+    v = v + step_size/2. * grad(logp)(x)
+    return x, v
 
-# def _hmc_transition(logp, x0, step_size, num_steps):
-#   def leapfrog_step(x, v):
-#     v = v + step_size/2. * grad(logp)(x)
-#     x = x + step_size * v
-#     v = v + step_size/2. * grad(logp)(x)
-#     return x, v
+  def accept(x0, v0, x1, v1):
+    thresh = min(0., energy(x1, v1) - energy(x0, v0))
+    return np.log(npr.rand()) < thresh
 
-#   def accept(x0, v0, x1, v1):
-#     thresh = min(0., energy(x1, v1) - energy(x0, v0))
-#     return np.log(npr.rand()) < thresh
+  def energy(x, v): return logp(x) - 0.5 * np.dot(v, v)
 
-#   def energy(x, v): return logp(x) - 0.5 * np.dot(v, v)
+  v0 = npr.normal(size=x0.shape)
+  x, v = x0, v0
+  for i in xrange(num_steps):
+    x, v = leapfrog_step(x, v)
+  return x if accept(x0, v0, x, v) else x0
 
-#   v0 = npr.normal(size=x0.shape)
-#   x, v = x0, v0
-#   for i in xrange(num_steps):
-#     x, v = leapfrog_step(x, v)
-#   return x if accept(x0, v0, x, v) else x0
+def hmc_transition(logp, x0, *args):
+  _x0, unflatten = flatten(x0)
+  _logp = lambda x: logp(unflatten(x))
+  return unflatten(_hmc_transition(_logp, _x0, *args))
 
-# def hmc_transition(logp, x0, *args):
-#   _x0, unflatten = flatten(x0)
-#   _logp = lambda x: logp(unflatten(x))
-#   return unflatten(_hmc_transition(_logp, _x0, *args))
+def posterior_inference(sampler, observed, step_size, num_steps, num_iters):
+  ifix, x = zip(*[(i, x) for i, x in enumerate(observed) if x is not None])
+  logp, z, zfilt = make_logp(sampler, ifix)
+  logp_ = lambda z: logp(z, x)
+  transition = lambda z: hmc_transition(logp_, z, step_size, num_steps)
 
-# def posterior_inference(sampler, obs, step_size, num_steps, num_iters):
-#   latents, _,  logp = make_logp(sampler)
-#   _logp = lambda latents: logp(latents, obs)
-#   transition = lambda z: hmc_transition(_logp, z, step_size, num_steps)
+  samples = [zfilt(z)]
+  for _ in tqdm(range(num_iters)):
+    z = transition(z)
+    samples.append(zfilt(z))
+  return samples
 
-#   samples = [latents]
-#   for _ in tqdm(range(num_iters)):
-#     samples.append(transition(samples[-1]))
-#   return samples
+def test0():
+  # define model by writing a sampler function
+  def sampler_fun():
+    z = normal(0., np.array([1., 4.]))
+    x = normal(z, np.array([1., 2.]))
+    return z, x
 
-# def test0():
-#   """Sampling from a Gaussian prior."""
+  # set up observations
+  observations = (None, np.ones(2))
 
-#   # define model by writing a sampler function
-#   def sampler_fun():
-#     z = normal(0., np.array([1., 4.]))
-#     return normal(z)
+  # run posterior inference
+  samples = posterior_inference(sampler_fun, observations, 0.1, 25, 100)
+  samples = np.vstack(samples)
 
-#   # set an observation
-#   obs = np.ones(2)
+  # plot results
+  fig, ax = plt.subplots()
+  ax.plot(samples[:,0], samples[:,1], 'k.')
+  ax.axis('equal')
+  ax.set_title(r'Samples from $x \sim \mathcal{N}([0, 0], [1, 4])$')
 
-#   # run posterior inference
-#   # TODO samples comes out as a list of dicts, each keyed by ProbProgNodes.
-#   # That's a mess! Gotta improve that. Name the variables that we want to do
-#   # inference over?
-#   samples = posterior_inference(sampler_fun, obs, 0.1, 25, 100)
-#   print samples
-
-#   # # plot results
-#   # fig, ax = plt.subplots()
-#   # ax.plot(samples[:,0], samples[:,1], 'k.')
-#   # ax.axis('equal')
-#   # ax.set_title(r'Samples from $x \sim \mathcal{N}([0, 0], [1, 4])$')
-
-# if __name__ == '__main__':
-#   test0()
+if __name__ == '__main__':
+  test0()
+  plt.show()
