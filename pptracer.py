@@ -41,7 +41,7 @@ def make_logp(fun, ifix):
   start_node = ProbProgNode.new_root()
   _, end_node = trace(start_node, fun_, global_rng)
   graph = list(toposort(end_node))[::-1]
-  xnodes = [node for i, node in enumerate(end_node.parents) if i in ifix]
+  xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
   zfilt = lambda zs: [z for z, node in zip(zs, znodes) if node in end_node.parents]
   def logpdf(z, x):
