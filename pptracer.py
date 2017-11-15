@@ -187,13 +187,12 @@ def test0():
 
 def test1():
   npr.seed(0)
-  N = 10
-  D = 2
+  N = 100
+  D = 5
 
   # generate some synth data
   x = npr.randn(N, D)
-  # beta = npr.randn(D)
-  beta = np.array([1., -1.])
+  beta = npr.randn(D)
   y = bernoulli(np.dot(x, beta))
 
   # write da model
@@ -206,7 +205,7 @@ def test1():
   observations = (None, y)
 
   # run posterior inference
-  samples = posterior_inference(sampler_fun, observations, 0.5 / N, 10, 100)
+  samples = posterior_inference(sampler_fun, observations, 1. / N, 10, 250)
   samples = np.vstack(samples)
 
   print beta
