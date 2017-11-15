@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import numpy as onp
-from numpy.random import RandomState as RS
+from numpy.random import RandomState
 
 import matplotlib.pyplot as plt
 
@@ -38,7 +38,7 @@ class ProbProgNode(Node):
 def make_logp(fun, ifix):
   def fun_(rng): return tuple(fun(rng))
   start_node = ProbProgNode.new_root()
-  _, end_node = trace(start_node, fun_, RS())
+  _, end_node = trace(start_node, fun_, RNG())
   graph = list(toposort(end_node))[::-1]
   xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
@@ -56,11 +56,20 @@ def make_logp(fun, ifix):
 
 ### rng primitives
 
+class RNG(RandomState):
+  def bernoulli(self, logits):
+    return 0 + (logits > logit(self.uniform(size=len(logits))))
+
 class RNGBox(Box):
   @primitive
   def normal(self, *args, **kwargs):
     return self.normal(*args, **kwargs)
-RNGBox.register(RS)
+
+  @primitive
+  def bernoulli(self, *args, **kwargs):
+    return self.bernoulli(*args, **kwargs)
+
+RNGBox.register(RNG)
 
 logpdfs = {}
 def deflogp(fun, logp):
@@ -71,14 +80,9 @@ def normal_logp(x, loc=0., scale=1., size=None):
                   + np.sum(np.log(scale**2)) + np.size(x) * np.log(2*np.pi))
 deflogp(func(RNGBox.normal), normal_logp)
 
-
-# @rng_primitive
-# def bernoulli(logits):
-#   return 0 + (logits > logit(onp.random.uniform(size=len(logits))))
-
-# def bernoulli_logp(x, logits, size=None):
-#   return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
-# deflogp(bernoulli, bernoulli_logp)
+def bernoulli_logp(x, logits, size=None):
+  return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
+deflogp(func(RNGBox.bernoulli), bernoulli_logp)
 
 ### hmc
 
@@ -151,12 +155,12 @@ def test1():
   # generate some synth data
   x = npr.randn(N, D)
   beta = npr.randn(D)
-  y = bernoulli(np.dot(x, beta))
+  y = RNG().bernoulli(np.dot(x, beta))
 
   # write da model
-  def sampler_fun():
-    beta = normal(np.zeros(D), np.ones(D))
-    y = bernoulli(np.dot(x, beta))
+  def sampler_fun(rng):
+    beta = rng.normal(np.zeros(D), np.ones(D))
+    y = rng.bernoulli(np.dot(x, beta))
     return beta, y
 
   # set up observations
@@ -175,11 +179,11 @@ if __name__ == '__main__':
 
   npr.seed(0)
 
-  def sample_prior():
+  def sample_prior(rng):
     A = np.array([[1., 0.], [0., 0.]])
-    z1 = normal(np.ones(2), 2 * np.ones(2))
-    z2 = normal(np.zeros(2))
-    x = normal(np.dot(A, z1) + z2, 3 * np.ones(2))
+    z1 = rng.normal(np.ones(2), 2 * np.ones(2))
+    z2 = rng.normal(np.zeros(2))
+    x = rng.normal(np.dot(A, z1) + z2, 3 * np.ones(2))
     return z1, x
 
   logp, latent_rvs, zfilt = make_logp(sample_prior, (1,))
