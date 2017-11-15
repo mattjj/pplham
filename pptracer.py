@@ -45,7 +45,10 @@ def make_logp(fun, ifix):
   graph = list(toposort(end_node))[::-1]
   xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
-  zfilt = lambda zs: [z for z, node in zip(zs, znodes) if node in end_node.parents]
+  def zfilt(zs):
+    znodes_to_zs = dict(zip(znodes, zs))
+    return [znodes_to_zs[znode] for znode in end_node.parents
+            if znode not in xnodes]
   def logpdf(z, x):
     rvs = dict(zip(znodes, z) + zip(xnodes, x))
     logp = 0.
@@ -107,24 +110,6 @@ def bernoulli_logp(x, logits, size=None):
   return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
 deflogp(bernoulli, bernoulli_logp)
 
-
-### basic example
-
-npr.seed(0)
-
-def sample_prior():
-  A = np.array([[1., 0.], [0., 0.]])
-  z1 = normal(np.ones(2), 2 * np.ones(2))
-  z2 = normal(np.zeros(2))
-  x = normal(np.dot(A, z1) + z2, 3 * np.ones(2))
-  return z1, x
-
-logp, latent_rvs, zfilt = make_logp(sample_prior, (1,))
-print latent_rvs         # should be (z1, z2)
-print zfilt(latent_rvs)  # should be just z1
-print logp(latent_rvs, np.ones(2))
-print
-
 ### hmc
 
 def _hmc_transition(logp, x0, step_size, num_steps):
@@ -152,7 +137,10 @@ def hmc_transition(logp, x0, *args):
   return unflatten(_hmc_transition(_logp, _x0, *args))
 
 def posterior_inference(sampler, observed, step_size, num_steps, num_iters):
-  ifix, x = zip(*[(i, x) for i, x in enumerate(observed) if x is not None])
+  if all(x is None for x in observed):
+    ifix, x = [], []
+  else:
+    ifix, x = zip(*[(i, x) for i, x in enumerate(observed) if x is not None])
   logp, z, zfilt = make_logp(sampler, ifix)
   logp_ = lambda z: logp(z, x)
   transition = lambda z: hmc_transition(logp_, z, step_size, num_steps)
@@ -213,6 +201,24 @@ def test1():
   print samples[-10:].mean(0)
 
 if __name__ == '__main__':
+
+  ### basic example
+
+  npr.seed(0)
+
+  def sample_prior():
+    A = np.array([[1., 0.], [0., 0.]])
+    z1 = normal(np.ones(2), 2 * np.ones(2))
+    z2 = normal(np.zeros(2))
+    x = normal(np.dot(A, z1) + z2, 3 * np.ones(2))
+    return z1, x
+
+  logp, latent_rvs, zfilt = make_logp(sample_prior, (1,))
+  print latent_rvs         # should be (z1, z2)
+  print zfilt(latent_rvs)  # should be just z1
+  print logp(latent_rvs, np.ones(2))
+  print
+
   # test0()
   test1()
   plt.show()
