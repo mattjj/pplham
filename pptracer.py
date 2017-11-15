@@ -45,16 +45,15 @@ def make_logp(fun, ifix):
   graph = list(toposort(end_node))[::-1]
   xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
-  def zfilt(zs):
-    znodes_to_zs = dict(zip(znodes, zs))
-    return [znodes_to_zs[znode] for znode in end_node.parents
-            if znode not in xnodes]
   def logpdf(z, x):
     rvs = dict(zip(znodes, z) + zip(xnodes, x))
     logp = 0.
     for node in graph:
       node.x, logp = node.f(rvs.get(node), logp)
     return logp
+  def zfilt(zs):
+    rvs = dict(zip(znodes, zs))
+    return [rvs[node] for node in end_node.parents if node in rvs]
   return logpdf, [node.x for node in znodes], zfilt
 
 ### setting up a global rng and rng primitives
@@ -175,13 +174,12 @@ def test0():
 
 def test1():
   npr.seed(0)
-  N = 10
-  D = 2
+  N = 100
+  D = 5
 
   # generate some synth data
   x = npr.randn(N, D)
-  # beta = npr.randn(D)
-  beta = np.array([1., -1.])
+  beta = npr.randn(D)
   y = bernoulli(np.dot(x, beta))
 
   # write da model
@@ -194,7 +192,7 @@ def test1():
   observations = (None, y)
 
   # run posterior inference
-  samples = posterior_inference(sampler_fun, observations, 0.5 / N, 10, 100)
+  samples = posterior_inference(sampler_fun, observations, 1. / N, 10, 250)
   samples = np.vstack(samples)
 
   print beta
