@@ -45,13 +45,15 @@ def make_logp(fun, ifix):
   graph = list(toposort(end_node))[::-1]
   xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
-  zfilt = lambda zs: [z for z, node in zip(zs, znodes) if node in end_node.parents]
   def logpdf(z, x):
     rvs = dict(zip(znodes, z) + zip(xnodes, x))
     logp = 0.
     for node in graph:
       node.x, logp = node.f(rvs.get(node), logp)
     return logp
+  def zfilt(zs):
+    rvs = dict(zip(znodes, zs))
+    return [rvs[node] for node in end_node.parents if node in rvs]
   return logpdf, [node.x for node in znodes], zfilt
 
 ### setting up a global rng and rng primitives
