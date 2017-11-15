@@ -187,6 +187,7 @@ def test0():
 
 def test1():
   npr.seed(0)
+  N = 10
   D = 2
 
   # generate some synth data
@@ -209,10 +210,7 @@ def test1():
   samples = np.vstack(samples)
 
   print beta
-  print samples.mean(0)
-
-  # TODO i think this isn't working... probably got math wrong
-  import ipdb; ipdb.set_trace()
+  print samples[-10:].mean(0)
 
 if __name__ == '__main__':
   # test0()
