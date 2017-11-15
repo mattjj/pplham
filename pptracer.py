@@ -8,7 +8,9 @@ import matplotlib.pyplot as plt
 
 import autograd.numpy as np
 import autograd.numpy.random as npr
+from autograd.scipy.special import expit, logit
 from autograd import grad
+
 from autograd.tracer import trace, Node, toposort
 from autograd.util import subvals
 from autograd.wrap_util import unary_to_nary
@@ -88,11 +90,22 @@ def deflogp(fun, logp):
 ### rng functions
 
 normal = rng_primitive(onp.random.normal)
+binomial = rng_primitive(onp.random.binomial)
+# bernoulli = rng_primitive(partial(onp.random.binomial, n=1))
 
-def randn_logp(x, loc=0., scale=1., size=None):
+def normal_logp(x, loc=0., scale=1., size=None):
     return -1./2 * (np.sum((x - loc)**2 / scale**2)
                     + np.sum(np.log(scale**2)) + np.size(x) * np.log(2*np.pi))
-deflogp(normal, randn_logp)
+deflogp(normal, normal_logp)
+
+
+@rng_primitive
+def bernoulli(logits):
+  return 0 + (logits > logit(onp.random.uniform(size=len(logits))))
+
+def bernoulli_logp(x, logits, size=None):
+  return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
+deflogp(bernoulli, bernoulli_logp)
 
 
 ### basic example
@@ -151,6 +164,8 @@ def posterior_inference(sampler, observed, step_size, num_steps, num_iters):
   return samples
 
 def test0():
+  npr.seed(0)
+
   # define model by writing a sampler function
   def sampler_fun():
     z = normal(0., np.array([1., 4.]))
@@ -170,6 +185,36 @@ def test0():
   ax.axis('equal')
   ax.set_title(r'Samples from $x \sim \mathcal{N}([0, 0], [1, 4])$')
 
+def test1():
+  npr.seed(0)
+  D = 2
+
+  # generate some synth data
+  x = npr.randn(N, D)
+  # beta = npr.randn(D)
+  beta = np.array([1., -1.])
+  y = bernoulli(np.dot(x, beta))
+
+  # write da model
+  def sampler_fun():
+    beta = normal(np.zeros(D), np.ones(D))
+    y = bernoulli(np.dot(x, beta))
+    return beta, y
+
+  # set up observations
+  observations = (None, y)
+
+  # run posterior inference
+  samples = posterior_inference(sampler_fun, observations, 0.5 / N, 10, 100)
+  samples = np.vstack(samples)
+
+  print beta
+  print samples.mean(0)
+
+  # TODO i think this isn't working... probably got math wrong
+  import ipdb; ipdb.set_trace()
+
 if __name__ == '__main__':
-  test0()
+  # test0()
+  test1()
   plt.show()
