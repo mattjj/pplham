@@ -1,9 +1,7 @@
-from itertools import repeat, chain
-from functools import partial
-from contextlib import contextmanager
-from collections import defaultdict
 from tqdm import tqdm
 import numpy as onp
+from numpy.random import RandomState as RS
+
 import matplotlib.pyplot as plt
 
 import autograd.numpy as np
@@ -12,9 +10,8 @@ from autograd.scipy.special import expit, logit
 from autograd import grad
 
 from autograd.tracer import trace, Node, toposort
-from autograd.util import subvals
-from autograd.wrap_util import unary_to_nary
-from autograd.extend import primitive, Box, register_notrace, VJPNode, VSpace
+from autograd.util import subvals, func
+from autograd.extend import primitive, Box
 from autograd.misc.flatten import flatten
 from autograd.builtins import tuple
 
@@ -24,8 +21,9 @@ class ProbProgNode(Node):
     def f(x, logp):
       _args = subvals(args, zip(argnums, (p.x for p in parents)))
       if self.is_rv:
-        return x, logp + logpdfs[fun](x, *_args, **kwargs)
-      return fun(*_args, **kwargs), logp
+        return x, logp + logpdfs[fun](x, *_args[1:], **kwargs)
+      else:
+        return fun(*_args, **kwargs), logp
     self.parents = parents
     self.is_rv = fun in logpdfs
     self.x = ans
@@ -38,10 +36,9 @@ class ProbProgNode(Node):
     self.x = None
 
 def make_logp(fun, ifix):
-  def fun_(rng):
-    with use_rng(rng): return tuple(fun())
+  def fun_(rng): return tuple(fun(rng))
   start_node = ProbProgNode.new_root()
-  _, end_node = trace(start_node, fun_, global_rng)
+  _, end_node = trace(start_node, fun_, RS())
   graph = list(toposort(end_node))[::-1]
   xnodes = [end_node.parents[i] for i in ifix]
   znodes = [node for node in graph if node.is_rv and node not in xnodes]
@@ -56,58 +53,32 @@ def make_logp(fun, ifix):
     return [rvs[node] for node in end_node.parents if node in rvs]
   return logpdf, [node.x for node in znodes], zfilt
 
-### setting up a global rng and rng primitives
 
-class RNG(object): pass
-class RNGBox(Box): pass
-RNGBox.register(RNG)
-global_rng = RNG()
+### rng primitives
 
-@contextmanager
-def use_rng(rng):
-  global global_rng
-  global_rng, prev_rng = rng, global_rng
-  yield
-  global_rng = prev_rng
-
-### core for rng primitives and their densities
-
-def rng_primitive(fun):
+class RNGBox(Box):
   @primitive
-  def _fun(rng, *args, **kwargs):
-    return fun(*args, **kwargs)
-  def wrapped(*args, **kwargs):
-    return _fun(global_rng, *args, **kwargs)
-  wrapped._fun = _fun
-  return wrapped
+  def normal(self, *args, **kwargs):
+    return self.normal(*args, **kwargs)
+RNGBox.register(RS)
 
-no_density = lambda *args, **kwargs: 0.
-logpdfs = defaultdict(lambda: no_density)
-
+logpdfs = {}
 def deflogp(fun, logp):
-  def _logp(val, rng, *args, **kwargs):
-    return logp(val, *args, **kwargs)
-  logpdfs[fun._fun] = _logp
-
-### rng functions
-
-normal = rng_primitive(onp.random.normal)
-binomial = rng_primitive(onp.random.binomial)
-# bernoulli = rng_primitive(partial(onp.random.binomial, n=1))
+  logpdfs[fun] = logp
 
 def normal_logp(x, loc=0., scale=1., size=None):
-    return -1./2 * (np.sum((x - loc)**2 / scale**2)
-                    + np.sum(np.log(scale**2)) + np.size(x) * np.log(2*np.pi))
-deflogp(normal, normal_logp)
+  return -1./2 * (np.sum((x - loc)**2 / scale**2)
+                  + np.sum(np.log(scale**2)) + np.size(x) * np.log(2*np.pi))
+deflogp(func(RNGBox.normal), normal_logp)
 
 
-@rng_primitive
-def bernoulli(logits):
-  return 0 + (logits > logit(onp.random.uniform(size=len(logits))))
+# @rng_primitive
+# def bernoulli(logits):
+#   return 0 + (logits > logit(onp.random.uniform(size=len(logits))))
 
-def bernoulli_logp(x, logits, size=None):
-  return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
-deflogp(bernoulli, bernoulli_logp)
+# def bernoulli_logp(x, logits, size=None):
+#   return -np.sum(np.logaddexp(0., np.where(x, -1., 1.) * logits))
+# deflogp(bernoulli, bernoulli_logp)
 
 ### hmc
 
